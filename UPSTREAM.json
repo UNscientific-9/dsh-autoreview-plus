@@ -1,0 +1,58 @@
+{
+  "repository": "https://github.com/deepseek-ai/deepseek-harness",
+  "tag": "dsh-v0.2.0-rc.2",
+  "commit": "639ed015397290b3745d163aafe02ffee4aa3f84",
+  "package": "@deepseek-ai/dsh-experimental-auto-review",
+  "version": "0.2.0-rc.2",
+  "sourcePath": "packages/experimental/auto-review",
+  "files": [
+    {
+      "path": "upstream/auto-review/cordis.patch.yml",
+      "sha256": "21d456d0053b3d52ca8ad4ceef60e4cd5618e8c850ab8fe9e6377dfcdcb3bc2a"
+    },
+    {
+      "path": "upstream/auto-review/icon.svg",
+      "sha256": "e79258d0077992379f0a97a1eb38cd66a392e24fc5d3808043531da71b981a93"
+    },
+    {
+      "path": "upstream/auto-review/locale/en.json",
+      "sha256": "be87b383b42e89b36cabbe21a960ab2e5d89089bc06688f5eff3676ecfd4e31b"
+    },
+    {
+      "path": "upstream/auto-review/locale/zh.json",
+      "sha256": "e3b026dfa698ca7061563f5d6a2d99b6d340afeb1a3736a7c7fda802fd687cfe"
+    },
+    {
+      "path": "upstream/auto-review/package.json",
+      "sha256": "61651bc2d60a34e70c9e136d20f8c487d43607925b14eba8e9526c9cbf6dc60f"
+    },
+    {
+      "path": "upstream/auto-review/README.i18n.yaml",
+      "sha256": "6058fa5d5024e261113c6085d58f6bb154eca22a7ce59ae6880e49698a13b33f"
+    },
+    {
+      "path": "upstream/auto-review/README.md",
+      "sha256": "4949bccc4b9d9e5bc03e7d6d1e84302118d215cfa36cb90c216ecaab385cfb90"
+    },
+    {
+      "path": "upstream/auto-review/README.zh.md",
+      "sha256": "0071c4fdff60c03e747c422e2aa05fccced20aaaa264c0d46c53122db41ddd94"
+    },
+    {
+      "path": "upstream/auto-review/src/index.ts",
+      "sha256": "5a869b87bf4ac397fffca5cf0a6ace05879fdbf1aecffc101b5464186a26e2e2"
+    },
+    {
+      "path": "upstream/auto-review/tests/auto-review.e2e.ts",
+      "sha256": "386e5dc0c96ff578150ced44aa96f77e964edcf66149cb76df0f4b772232a412"
+    },
+    {
+      "path": "upstream/auto-review/tests/auto-review.spec.ts",
+      "sha256": "4736d4c983e38c7e68283c6838eb1eef4e803c3c4dca6eb06f0a5f4f54915280"
+    },
+    {
+      "path": "upstream/auto-review/tsconfig.json",
+      "sha256": "39ef1d2a3d9e8bdf17683326913ab6fffcbbcece882e527f1c5fe01afe43295c"
+    }
+  ]
+}
