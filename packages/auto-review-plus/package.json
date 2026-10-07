@@ -1,0 +1,38 @@
+{
+  "name": "dsh-experimental-auto-review-plus",
+  "version": "0.10.0",
+  "description": "Plus edition derived from DeepSeek's official experimental Auto Review",
+  "license": "MIT",
+  "type": "module",
+  "repository": { "type": "git", "url": "git+https://github.com/UNscientific-9/dsh-autoreview-plus.git", "directory": "packages/auto-review-plus" },
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": { ".": { "types": "./lib/types/index.d.ts", "default": "./lib/index.js" }, "./client": { "types": "./lib/types/client/index.d.ts", "default": "./lib/client.js" }, "./package.json": "./package.json" },
+  "files": ["lib", "icon.svg", "cordis.patch.yml", "README.md", "LICENSE"],
+  "engines": { "node": "^22.19.0 || >=24.0.0" },
+  "dsh": { "manifestVersion": 1, "bundle": { "patch": "./cordis.patch.yml" }, "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-sidebar-right", "@deepseek-ai/dsh-client-ui-slots", "@deepseek-ai/dsh-client-connection"] } },
+  "dshWorkshop": { "lifecycle": { "activation": "restart-profile", "dispose": "supported" } },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.3 <5",
+    "@deepseek-ai/schemastery": ">=3.18.5-alpha.1 <4",
+    "@deepseek-ai/dsh-agent": ">=0.2.0-rc.2 <0.3 || >=0.2.1-0 <0.3",
+    "@deepseek-ai/dsh-agent-instructions": ">=0.2.0-rc.2 <0.3 || >=0.2.1-0 <0.3",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.3 || >=0.2.1-0 <0.3",
+    "@deepseek-ai/dsh-permission-presets": ">=0.2.0-rc.2 <0.3 || >=0.2.1-0 <0.3",
+    "@deepseek-ai/dsh-session": ">=0.2.0-rc.2 <0.3 || >=0.2.1-0 <0.3",
+    "@deepseek-ai/dsh-subagent": ">=0.2.0-rc.2 <0.3 || >=0.2.1-0 <0.3",
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2 <0.3 || >=0.2.1-0 <0.3",
+    "@deepseek-ai/dsh-user-approval": ">=0.2.0-rc.2 <0.3 || >=0.2.1-0 <0.3",
+    "@deepseek-ai/dsh-util-values": ">=0.2.0-rc.2 <0.3 || >=0.2.1-0 <0.3",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-rc.2 <0.3 || >=0.2.1-0 <0.3",
+    "react": ">=19 <20",
+    "react-dom": ">=19 <20"
+  },
+  "dependencies": { "undici": "8.10.0", "zod": "^4.4.3" },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.3", "@deepseek-ai/schemastery": "3.18.5-alpha.1",
+    "@deepseek-ai/dsh-agent": "0.2.1-alpha.1", "@deepseek-ai/dsh-agent-instructions": "0.2.1-alpha.1", "@deepseek-ai/dsh-llm": "0.2.1-alpha.1", "@deepseek-ai/dsh-permission-presets": "0.2.1-alpha.1", "@deepseek-ai/dsh-session": "0.2.1-alpha.1", "@deepseek-ai/dsh-tools": "0.2.1-alpha.1", "@deepseek-ai/dsh-user-approval": "0.2.1-alpha.1", "@deepseek-ai/dsh-util-values": "0.2.1-alpha.1", "@deepseek-ai/dsh-subagent": "0.2.1-alpha.1", "@deepseek-ai/dsh-session-projection": "0.2.1-alpha.1", "@deepseek-ai/dsh-system-prompt": "0.2.1-alpha.1", "@deepseek-ai/dsh-compaction": "0.2.1-alpha.1", "@deepseek-ai/dsh-tool-subagent": "0.2.1-alpha.1", "@deepseek-ai/dsh-typert-protocol": "0.2.1-alpha.1",
+    "typescript": "^7.0.2", "tsdown": "^0.23.0", "vitest": "^5.0.0", "jsdom": "^30.0.1", "@types/node": "^26.2.0", "@types/react": "19.3.0", "react": "19.2.8", "react-dom": "19.2.8"
+  },
+  "scripts": { "build": "node scripts/build.mjs", "typecheck": "tsc --noEmit", "test": "vitest run" }
+}

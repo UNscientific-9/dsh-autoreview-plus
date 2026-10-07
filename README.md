@@ -2,7 +2,7 @@
 
 基于 DeepSeek 官方 **`@deepseek-ai/dsh-experimental-auto-review`** 改造的 Plus 项目。
 
-当前阶段：**新设计与官方源码基线已建立，Plus 功能尚未实现、尚未替换桌面端插件。** 先前的第三方实现留在本机作为历史副本，不属于此公开仓库。
+当前阶段：**增强版已实现并通过类型检查、测试、构建和界面验证，已产出可安装包；尚未替换桌面端插件。**
 
 这版要提供的体验：
 
@@ -22,10 +22,10 @@ upstream/auto-review/       官方 0.2.0-rc.2 原始源码、测试与资源
 UPSTREAM.json              来源版本、提交号与逐文件校验值
 DESIGN.md                  官方 Plus 版的新设计
 scripts/                   来源校验与公开提交检查
-packages/auto-review-plus/  后续增强版实现位置，当前尚未建立
+packages/auto-review-plus/  增强版实现（源码、测试、构建脚本与界面预览检查）
 ```
 
-官方快照保留了 monorepo 的原始依赖声明和测试环境，不能作为独立 npm 包直接安装。本仓库当前没有提供可安装的 Plus 发行包，也没有发布 npm 包。
+官方快照保留了 monorepo 的原始依赖声明和测试环境，不能作为独立 npm 包直接安装。增强版已产出本地安装包，尚未发布 npm。
 
 提交前检查（仅使用已有 Node.js 和 Git）：
 

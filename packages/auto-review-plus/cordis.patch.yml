@@ -1,0 +1,5 @@
+# Install first; activation and replacement of an existing Auto provider are separate steps.
+- insert:
+    - id: auto-review-plus
+      name: dsh-experimental-auto-review-plus
+      disabled: true
