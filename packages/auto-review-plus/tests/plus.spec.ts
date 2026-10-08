@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile, rm, symlink } from 'node:fs/promises'
+import { mkdir, writeFile, rm, symlink, realpath, stat as nodeStat, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { RecordStore } from '../src/records.ts'
 import { focusedHistory, redact, redactText } from '../src/evidence.ts'
-import { safeRead } from '../src/safe-read.ts'
+import { safeRead, type SafeReadFileSystem } from '../src/safe-read.ts'
 import { jevDecision, jevTransport } from '../src/jev.ts'
 import { optionReader } from '../src/options.ts'
 import { Context } from '@deepseek-ai/cordis'
@@ -79,30 +79,60 @@ describe('durable records', () => {
   })
 })
 describe('conservative safe read', () => {
+  const fs = {
+    async resolve(requested: string, options?: { cwd?: string; signal?: AbortSignal }) {
+      options?.signal?.throwIfAborted()
+      const targetPath = await realpath(path.resolve(options?.cwd ?? process.cwd(), requested))
+      return { targetKey: targetPath, displayPath: targetPath }
+    },
+    contains(parent: { targetKey: string }, child: { targetKey: string }) {
+      const relative = path.relative(parent.targetKey, child.targetKey)
+      return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+    },
+    async stat(target: { targetKey: string }, signal?: AbortSignal) {
+      signal?.throwIfAborted()
+      try {
+        const info = await nodeStat(target.targetKey)
+        return { type: info.isFile() ? 'file' as const : info.isDirectory() ? 'directory' as const : 'other' as const, size: info.size }
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined
+        throw error
+      }
+    },
+    processPath(target: { targetKey: string }) { return target.targetKey },
+    async readBytes(target: { targetKey: string }, signal: AbortSignal | undefined, maxBytes: number) {
+      signal?.throwIfAborted()
+      const content = await readFile(target.targetKey)
+      if (content.byteLength > maxBytes) throw new Error('fixture provider byte limit exceeded')
+      return content
+    },
+  } as unknown as SafeReadFileSystem
+  const signal = new AbortController().signal
+
   it('allows bounded ordinary local text only for the identified tool and without unresolved limits', async () => {
     const cwd = path.join(root, 'workspace'); await mkdir(cwd, { recursive: true }); await writeFile(path.join(cwd, 'note.txt'), 'ordinary project note')
     const snapshot = { cwd, projectInstructions: [], history: [], action: { name: 'read', arguments: { file_path: 'note.txt' } } }
-    expect(await safeRead(snapshot, true)).toBe(true)
+    expect(await safeRead(snapshot, true, fs, signal)).toBe(true)
     // The official read tool names its argument file_path; any other shape stays out of the fast path.
-    expect(await safeRead({ ...snapshot, action: { name: 'read', arguments: { path: 'note.txt' } } }, true)).toBe(false)
-    expect(await safeRead({ ...snapshot, action: { name: 'read', arguments: { file_path: 'note.txt', offset: 0 } } }, true)).toBe(false)
-    expect(await safeRead(snapshot, false)).toBe(false)
-    expect(await safeRead({ ...snapshot, projectInstructions: ['Do not read files'] }, true)).toBe(false)
-    expect(await safeRead({ ...snapshot, action: { name: 'bash', arguments: { command: 'cat note.txt' } } }, true)).toBe(false)
-    expect(await safeRead({ ...snapshot, history: [{ role: 'human-instruction', content: [{ type: 'text', text: '生产环境' }] }] }, true)).toBe(false)
+    expect(await safeRead({ ...snapshot, action: { name: 'read', arguments: { path: 'note.txt' } } }, true, fs, signal)).toBe(false)
+    expect(await safeRead({ ...snapshot, action: { name: 'read', arguments: { file_path: 'note.txt', offset: 0 } } }, true, fs, signal)).toBe(false)
+    expect(await safeRead(snapshot, false, fs, signal)).toBe(false)
+    expect(await safeRead({ ...snapshot, projectInstructions: ['Do not read files'] }, true, fs, signal)).toBe(false)
+    expect(await safeRead({ ...snapshot, action: { name: 'bash', arguments: { command: 'cat note.txt' } } }, true, fs, signal)).toBe(false)
+    expect(await safeRead({ ...snapshot, history: [{ role: 'human-instruction', content: [{ type: 'text', text: '生产环境' }] }] }, true, fs, signal)).toBe(false)
     for (const role of ['human-instruction', 'direct-parent-instruction', 'constraint', 'checkpoint']) {
-      expect(await safeRead({ ...snapshot, history: [{ role, content: [{ type: 'text', text: '读取任何文件前先征得我同意' }] }] }, true)).toBe(false)
+      expect(await safeRead({ ...snapshot, history: [{ role, content: [{ type: 'text', text: '读取任何文件前先征得我同意' }] }] }, true, fs, signal)).toBe(false)
     }
-    expect(await safeRead({ ...snapshot, history: [{ role: 'fact', content: [] }] }, true)).toBe(true)
+    expect(await safeRead({ ...snapshot, history: [{ role: 'fact', content: [] }] }, true, fs, signal)).toBe(true)
   })
   it('rejects traversal, a sensitive file and a link escaping the workspace', async () => {
     const cwd = path.join(root, 'links'); await mkdir(cwd, { recursive: true }); await writeFile(path.join(root, 'outside.txt'), 'outside')
     await writeFile(path.join(cwd, 'secret.txt'), 'sensitive')
     const snapshot = { cwd, projectInstructions: [], history: [], action: { name: 'read', arguments: { file_path: '../outside.txt' } } }
-    expect(await safeRead(snapshot, true)).toBe(false)
-    expect(await safeRead({ ...snapshot, action: { name: 'read', arguments: { file_path: 'secret.txt' } } }, true)).toBe(false)
+    expect(await safeRead(snapshot, true, fs, signal)).toBe(false)
+    expect(await safeRead({ ...snapshot, action: { name: 'read', arguments: { file_path: 'secret.txt' } } }, true, fs, signal)).toBe(false)
     await symlink(root, path.join(cwd, 'outside-link'), 'junction')
-    expect(await safeRead({ ...snapshot, action: { name: 'read', arguments: { file_path: 'outside-link/outside.txt' } } }, true)).toBe(false)
+    expect(await safeRead({ ...snapshot, action: { name: 'read', arguments: { file_path: 'outside-link/outside.txt' } } }, true, fs, signal)).toBe(false)
   })
 })
 

@@ -128,6 +128,32 @@ describe('Plus additions in the official tool pipeline', () => {
     expect(status.rows[0]).toMatchObject({ source: 'model', model: 'independent-review', status: 'allowed', outcome: 'succeeded' })
     expect(status.allowed).toBe(1)
   })
+  it.each([true, false])('routes the read through the rule only when host FS is available: %s', async available => {
+    const { ctx, adapter } = await harness(available ? [] : [decisionChunks('{"risk":"low","decision":"allow"}')])
+    ctx.provide('loader', { entries: () => ['@deepseek-ai/dsh-tool-fs', '@deepseek-ai/dsh-fs-local'].map(name => ({ options: { name }, fiber: { state: 2 } })) })
+    const provider = {
+      resolve: vi.fn(async (name: string) => ({ targetKey: name === '.' ? 'root-key' : 'file-key', displayPath: 'provider-relative' })),
+      contains: () => true,
+      stat: async (target: { targetKey: string }) => ({ version: 'fixture-version', type: target.targetKey === 'root-key' ? 'directory' : 'file', size: 12 }),
+      processPath: (target: { targetKey: string }) => target.targetKey === 'root-key' ? '/workspace' : '/workspace/note.txt',
+      readBytes: vi.fn(async () => new TextEncoder().encode('project note')),
+    }
+    if (available) ctx.provide('fs', provider)
+    let runs = 0
+    const parameters = { file_path: { type: 'string' } }
+    ctx.tools.register(defineContentToolFixture({ name: 'read', description: 'fixture provider read', parameters, async execute() { runs++; return [{ type: 'text', text: 'fixture read' }] } }))
+    const { session, agent } = autoSession(ctx, `plus-fast-fs-${available}`)
+    appendHeader(session, [{ name: 'read', description: 'fixture provider read', parameters }])
+    const callId = ToolCallId(`fast-read-${available}`)
+    appendAssistant(session, [{ type: 'tool-call', id: callId, name: 'read', arguments: '{"file_path":"note.txt"}' }])
+    appendNativeCall(session, callId, 'read', '{"file_path":"note.txt"}')
+    const result = await ctx.tools.execute({ agent, name: 'read', callId, arguments: { file_path: 'note.txt' }, signal: new AbortController().signal })
+    expect(result.isError).toBe(false); expect(runs).toBe(1)
+    expect(adapter.requests).toHaveLength(available ? 0 : 1)
+    const control = ctx.get('autoReviewPlusControl') as unknown as PlusControl
+    await vi.waitFor(async () => expect((await control.status(String(session.id))).rows[0]).toMatchObject({ source: available ? 'rule' : 'model', status: 'allowed', outcome: 'succeeded' }))
+    if (available) expect(provider.readBytes).toHaveBeenCalledWith(expect.anything(), expect.any(AbortSignal), 128 * 1024)
+  })
   it('waits for a Jev allow and records it before a tool is dispatched', async () => {
     const fetch = vi.spyOn(jevTransport, 'fetch').mockResolvedValue(Response.json({ answers: { decision: { choice: 'allow', confidence: 0.9 }, risk: { choice: 'low', confidence: 0.9 } } }) as never)
     try {
@@ -162,15 +188,44 @@ describe('Plus additions in the official tool pipeline', () => {
   it('does not dispatch when persisting the allow verdict fails', async () => {
     const target = RecordStore.prototype as unknown as { persist(row: ReviewRecord): Promise<void> }
     const original = target.persist
+    let failed = false
     const io = vi.spyOn(target, 'persist').mockImplementation(function (this: RecordStore, row) {
-      return row.status === 'allowed' ? Promise.reject(new Error('fixture ENOSPC')) : original.call(this, row)
+      if (!failed && row.status === 'allowed') { failed = true; return Promise.reject(new Error('fixture ENOSPC')) }
+      return original.call(this, row)
     })
     try {
-      const { ctx } = await harness([decisionChunks('{"risk":"low","decision":"allow"}')])
+      const { ctx } = await harness([decisionChunks('{"risk":"low","decision":"allow"}'), decisionChunks('{"risk":"low","decision":"allow"}')])
       const probe = registerProbe(ctx)
       const { result, control } = await executeFixture(ctx, 'plus-audit-failure')
       expect(result.isError).toBe(true); expect(probe.runs()).toBe(0)
       expect((await control.status('plus-audit-failure')).rows[0]).toMatchObject({ status: 'error', outcome: 'blocked' })
+      expect((await control.status('plus-audit-failure')).error).toBeNull()
+      const recovered = await executeFixture(ctx, 'plus-audit-recovered')
+      expect(recovered.result.isError).toBe(false); expect(probe.runs()).toBe(1)
+      expect((await control.status('plus-audit-recovered')).error).toBeNull()
+    } finally { io.mockRestore() }
+  })
+  it('retains a warning when the final execution result could not be saved', async () => {
+    const target = RecordStore.prototype as unknown as { persist(row: ReviewRecord): Promise<void> }
+    const original = target.persist
+    const io = vi.spyOn(target, 'persist').mockImplementation(function (this: RecordStore, row) {
+      return row.callId === 'final-audit-call' && row.outcome === 'succeeded' ? Promise.reject(new Error('fixture final ENOSPC')) : original.call(this, row)
+    })
+    try {
+      const { ctx } = await harness([decisionChunks('{"risk":"low","decision":"allow"}'), decisionChunks('{"risk":"low","decision":"allow"}')])
+      const probe = registerProbe(ctx)
+      const { session, agent } = autoSession(ctx, 'plus-final-audit-failure')
+      appendHeader(session, [{ name: 'probe', description: 'live probe description', parameters: { path: { type: 'string' } } }])
+      const callId = ToolCallId('final-audit-call')
+      appendAssistant(session, [{ type: 'tool-call', id: callId, name: 'probe', arguments: '{"path":"target"}' }])
+      appendNativeCall(session, callId, 'probe', '{"path":"target"}')
+      const result = await ctx.tools.execute({ agent, name: 'probe', callId, arguments: { path: 'target' }, signal: new AbortController().signal })
+      expect(result.isError).toBe(false); expect(probe.runs()).toBe(1)
+      const control = ctx.get('autoReviewPlusControl') as unknown as PlusControl
+      await vi.waitFor(async () => expect((await control.status(String(session.id))).error).toContain('执行结果未保存'))
+      expect((await control.status(String(session.id))).rows[0]?.outcome).toBeUndefined()
+      await executeFixture(ctx, 'plus-final-audit-storage-recovered')
+      expect((await control.status(String(session.id))).error).toContain('执行结果未保存')
     } finally { io.mockRestore() }
   })
   it('redacts pending and historical cookie values before sending independent-model evidence', async () => {

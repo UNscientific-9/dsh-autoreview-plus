@@ -52,9 +52,9 @@ export class PlusControl extends TypertRemoteService {
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('记录页码无效。')
     const session = this.session(sessionId)
     const page = await this.store.page(sessionId, offset)
-    const rows = [...this.store.rows.values()].filter(row => row.sessionId === sessionId)
     const permissions = this.owner.get('permissionPresets') as unknown as { current(value: typeof session): string }
-    return { ...page, error: this.auditError ?? page.error, enabled: permissions.current(session) === 'auto', selection: this.store.preferences[sessionId]?.id ?? 'default', rules: rows.filter(row => row.source === 'rule' && row.status === 'allowed').length, allowed: rows.filter(row => row.source !== 'rule' && row.status === 'allowed').length, denied: rows.filter(row => row.status === 'denied' || row.status === 'awaiting_user').length, failures: rows.filter(row => row.status === 'error').length }
+    const errors = [...new Set([page.error, this.auditError].filter((error): error is string => error !== null && error !== undefined))]
+    return { ...page, error: errors.join('；') || null, enabled: permissions.current(session) === 'auto', selection: this.store.preferences[sessionId]?.id ?? 'default' }
   }
   async select(sessionId: string, choiceId: string): Promise<boolean> {
     this.session(sessionId)

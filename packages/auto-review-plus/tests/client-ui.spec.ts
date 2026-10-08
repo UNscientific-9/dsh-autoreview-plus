@@ -10,6 +10,21 @@ async function click(text: string) { await act(async () => Array.from(host.query
 async function enter(input: HTMLInputElement, value: string) {
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })) })
 }
+function statusFor(selection: string): Awaited<ReturnType<TabFace['status']>> {
+  return { enabled: true, selection, rows: [], total: 0, error: null, rules: 0, allowed: 0, denied: 0, failures: 0 }
+}
+const sessionCatalog: TabFace['catalog'] = async () => ({
+  choices: [
+    { id: 'default', label: '跟随默认配置', selection: null },
+    { id: 'follow', label: '跟随当前会话模型', selection: { backend: 'follow' } },
+  ],
+  incomplete: false,
+  namespace: 'custom-install-id',
+})
+async function chooseSessionModel() {
+  await act(async () => (host.querySelector('button[aria-label="本会话审查模型"]') as HTMLButtonElement).click())
+  await click('跟随当前会话模型')
+}
 async function render(overrides: Partial<TabFace> = {}) {
   ;(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   const save = vi.fn(async view => ({ ...view, revision: 2 }))
@@ -56,6 +71,66 @@ describe('sidebar settings and records', () => {
     expect(host.textContent).toContain('保存失败，请重新加载')
     await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
     expect(host.textContent).toContain('保存失败，请重新加载')
+  })
+  it('does not let a poll started during selection restore the old session model', async () => {
+    vi.useFakeTimers()
+    const selection = Promise.withResolvers<unknown>()
+    const stalePoll = Promise.withResolvers<Awaited<ReturnType<TabFace['status']>>>()
+    const selectedStatusRequested = Promise.withResolvers<void>()
+    const status = vi.fn(async () => statusFor('default'))
+      .mockImplementationOnce(async () => statusFor('default'))
+      .mockImplementationOnce(() => stalePoll.promise)
+      .mockImplementationOnce(() => { selectedStatusRequested.resolve(); return Promise.resolve(statusFor('follow')) })
+    await render({ catalog: sessionCatalog, status, select: () => selection.promise })
+    await chooseSessionModel()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+    expect(status).toHaveBeenCalledTimes(2)
+
+    await act(async () => { selection.resolve(true); await selectedStatusRequested.promise; await Promise.resolve() })
+    expect(host.querySelector('button[aria-label="本会话审查模型"]')?.textContent).toContain('跟随当前会话模型')
+    expect(host.textContent).toContain('本会话审查模型已更新')
+
+    await act(async () => { stalePoll.resolve(statusFor('default')); await stalePoll.promise })
+    expect(host.querySelector('button[aria-label="本会话审查模型"]')?.textContent).toContain('跟随当前会话模型')
+    expect(host.textContent).toContain('本会话审查模型已更新')
+  })
+  it('ignores an expired poll error after the selected model has refreshed', async () => {
+    vi.useFakeTimers()
+    const selection = Promise.withResolvers<unknown>()
+    const stalePoll = Promise.withResolvers<Awaited<ReturnType<TabFace['status']>>>()
+    const selectedStatusRequested = Promise.withResolvers<void>()
+    const status = vi.fn(async () => statusFor('default'))
+      .mockImplementationOnce(async () => statusFor('default'))
+      .mockImplementationOnce(() => stalePoll.promise)
+      .mockImplementationOnce(() => { selectedStatusRequested.resolve(); return Promise.resolve(statusFor('follow')) })
+    await render({ catalog: sessionCatalog, status, select: () => selection.promise })
+    await chooseSessionModel()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+
+    await act(async () => { selection.resolve(true); await selectedStatusRequested.promise; await Promise.resolve() })
+    expect(host.textContent).toContain('本会话审查模型已更新')
+    await act(async () => { stalePoll.reject(new Error('过期轮询错误')); await stalePoll.promise.catch(() => {}) })
+    expect(host.textContent).not.toContain('过期轮询错误')
+    expect(host.querySelector('button[aria-label="本会话审查模型"]')?.textContent).toContain('跟随当前会话模型')
+    expect(host.textContent).toContain('本会话审查模型已更新')
+  })
+  it('invalidates a poll launched during a model selection that fails', async () => {
+    vi.useFakeTimers()
+    const selection = Promise.withResolvers<unknown>()
+    const stalePoll = Promise.withResolvers<Awaited<ReturnType<TabFace['status']>>>()
+    const status = vi.fn(async () => statusFor('default'))
+      .mockImplementationOnce(async () => statusFor('default'))
+      .mockImplementationOnce(() => stalePoll.promise)
+    await render({ catalog: sessionCatalog, status, select: () => selection.promise })
+    await chooseSessionModel()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
+
+    await act(async () => { selection.reject(new Error('会话模型选择失败')); await selection.promise.catch(() => {}); await Promise.resolve() })
+    expect(host.textContent).toContain('会话模型选择失败')
+    await act(async () => { stalePoll.resolve(statusFor('follow')); await stalePoll.promise })
+    expect(host.querySelector('button[aria-label="本会话审查模型"]')?.textContent).toContain('跟随默认配置')
+    expect(host.textContent).toContain('会话模型选择失败')
+    expect(host.textContent).not.toContain('本会话审查模型已更新')
   })
   it('removes a stale save form when reloading settings fails', async () => {
     const settings = vi.fn().mockResolvedValueOnce({ ns: 'custom-install-id', revision: 1, value: { backend: 'follow' } }).mockRejectedValueOnce(new Error('配置读取失败'))

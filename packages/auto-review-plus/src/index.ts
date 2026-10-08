@@ -11,8 +11,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { optionReader, type OptionsSource, type ResolvedOptions } from './options.ts'
 import { focusedHistory, redact, redactText } from './evidence.ts'
-import { RecordStore } from './records.ts'
-import { safeRead } from './safe-read.ts'
+import { RecordStore, RecordWriteError } from './records.ts'
+import { safeRead, type SafeReadFileSystem } from './safe-read.ts'
 import { jevDecision } from './jev.ts'
 import { PlusControl } from './control.ts'
 export { Config } from './options.ts'
@@ -645,18 +645,19 @@ async function classifyRisk(
 ): Promise<AutoReviewDecision> {
   const snapshot = snapshotAutoReview(agent, exec)
   const config = readOptions()
-  type LoaderEntry = { options?: { name?: string; disabled?: boolean }; fiber?: { state?: number } }
-  // The loader exposes `entries` as a generator method, not an array property.
-  const loaderEntries = (): readonly LoaderEntry[] => {
+  if (config.safeReads && snapshot.action.name === 'read') {
+    type LoaderEntry = { options?: { name?: string; disabled?: boolean }; fiber?: { state?: number } }
+    // The loader exposes `entries` as a generator method, not an array property.
     const loader = ctx.get('loader') as unknown as { entries?: () => Iterable<LoaderEntry> } | undefined
     const read = loader?.entries
-    return typeof read === 'function' ? [...read.call(loader)] : []
-  }
-  const active = (packageName: string) => loaderEntries().some(entry => entry.options?.name === packageName && !entry.options.disabled && entry.fiber?.state === FIBER_ACTIVE)
-  const trusted = active('@deepseek-ai/dsh-tool-fs') && active('@deepseek-ai/dsh-fs-local') && ctx.tools.get(exec.name, agent) === ctx.tools.get(exec.name)
-  if (config.safeReads && await safeRead(snapshot, trusted)) {
-    await store.update(recordId, { source: 'rule', risk: 'low', reason: '已验证官方本地读取工具、工作区边界、普通文本和敏感路径；没有需要解释的限制。' })
-    return { risk: 'low', decision: 'allow' }
+    const entries: readonly LoaderEntry[] = typeof read === 'function' ? [...read.call(loader)] : []
+    const active = (packageName: string) => entries.some(entry => entry.options?.name === packageName && !entry.options.disabled && entry.fiber?.state === FIBER_ACTIVE)
+    const trusted = active('@deepseek-ai/dsh-tool-fs') && active('@deepseek-ai/dsh-fs-local') && ctx.tools.get(exec.name, agent) === ctx.tools.get(exec.name)
+    const filesystem = ctx.get('fs') as SafeReadFileSystem | undefined
+    if (await safeRead(snapshot, trusted, filesystem, signal)) {
+      await store.update(recordId, { source: 'rule', risk: 'low', reason: '已验证官方本地读取工具、工作区边界、普通文本和敏感路径；没有需要解释的限制。' })
+      return { risk: 'low', decision: 'allow' }
+    }
   }
   const secrets = secretList(config)
   const evidence = redact({ ...snapshot, history: focusedHistory(snapshot.history) }, secrets) as ReviewSnapshot
@@ -754,7 +755,7 @@ export function apply(ctx: Context, source: OptionsSource = {}): void {
     const cancelled = result.isError && (exec.signal.aborted || result.error.info?.code === TOOL_ABORTED_BEFORE_DISPATCH || /^approval for .+ was cancelled/iu.test(result.error.message))
     const outcome = !result.isError ? 'succeeded' : cancelled ? 'cancelled' : !started ? 'blocked' : 'tool_error'
     // The model's denial remains a denial after the human answers; waiting is over.
-    void store.update(id, { outcome, finishedAt: Date.now(), ...row?.status === 'awaiting_user' ? { status: 'denied' as const } : {} }).catch(error => { control.auditError = redactText(error instanceof Error ? error.message : '执行结果记录写入失败。', secretList(readOptions())) })
+    void store.update(id, { outcome, finishedAt: Date.now(), ...row?.status === 'awaiting_user' ? { status: 'denied' as const } : {} }).catch(error => { control.auditError = `执行结果未保存：${redactText(error instanceof Error ? error.message : '执行结果记录写入失败。', secretList(readOptions()))}` })
   })
   // Retain the injected service while this context drains on disposal.
   const permissionPresets = ctx.get('permissionPresets') as unknown as {
@@ -799,6 +800,7 @@ export function apply(ctx: Context, source: OptionsSource = {}): void {
         )
         if (isAborted(lifecycle.signal)) { await store.update(recordId, { status: 'cancelled', durationMs: Date.now() - startedAt }); return { kind: 'cancel' } }
         if (!review.ok) {
+          if (review.error instanceof RecordWriteError) throw review.error
           const config = readOptions()
           const message = redactText(review.error instanceof Error ? review.error.message : String(review.error), secretList(config))
           await store.update(recordId, { status: 'error', reason: message, durationMs: Date.now() - startedAt })
@@ -818,9 +820,12 @@ export function apply(ctx: Context, source: OptionsSource = {}): void {
         return askUser(exec, decision.reason)
       } catch (error) {
         const message = redactText(error instanceof Error ? error.message : String(error), secretList(readOptions()))
-        if (store.error !== undefined) control.auditError = `审查记录无法保存：${message}`
-        const reason = store.error !== undefined ? '审查记录无法保存，当前操作未获放行。' : message
-        if (recordId !== undefined) await store.update(recordId, { status: 'error', reason, outcome: 'blocked', durationMs: Date.now() - startedAt }).catch(() => {})
+        const reason = error instanceof RecordWriteError ? '审查记录无法保存，当前操作未获放行。' : message
+        const closing = isAborted(lifecycle.signal)
+        if (recordId !== undefined) await store.update(recordId, { status: closing ? 'cancelled' : 'error', reason, outcome: closing ? 'cancelled' : 'blocked', durationMs: Date.now() - startedAt }).catch(repairError => {
+          control.auditError = `审查失败记录未补齐：${redactText(repairError instanceof Error ? repairError.message : '审查记录补记失败。', secretList(readOptions()))}`
+        })
+        if (closing) return { kind: 'cancel' }
         return failed(exec, new Error(reason))
       } finally {
         active.delete(completed.promise)

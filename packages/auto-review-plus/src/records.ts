@@ -9,14 +9,26 @@ export interface ReviewRecord {
   provider?: string; model?: string; risk?: 'low' | 'medium' | 'high'; reason?: string; durationMs?: number
   outcome?: 'succeeded' | 'tool_error' | 'blocked' | 'cancelled' | 'interrupted'; finishedAt?: number
 }
+export class RecordWriteError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RecordWriteError'
+  }
+}
+export interface RecordPage {
+  rows: ReviewRecord[]; total: number; error: string | null
+  rules: number; allowed: number; denied: number; failures: number
+}
 /** One file per record; no automatic pruning and no custom Session event types. */
 export class RecordStore {
   readonly directory: string
   readonly ready: Promise<void>
   readonly rows = new Map<string, ReviewRecord>()
   preferences: Record<string, { id: string; selection: import('./control-types.ts').ModelChoice['selection'] }> = {}
-  error: string | undefined
+  private loadError: string | undefined
+  private writeError: string | undefined
   private chain: Promise<unknown> = Promise.resolve()
+  get error(): string | undefined { return [this.loadError, this.writeError].filter(Boolean).join('；') || undefined }
   constructor(directory = '') {
     this.directory = directory || fileURLToPath(new URL('../.local-state/records/', import.meta.url))
     this.ready = this.load()
@@ -40,66 +52,107 @@ export class RecordStore {
       this.preferences = preferences as typeof this.preferences
     } catch (error) {
       // A damaged preference file must not stop the gate: fall back to defaults and report it.
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.error = error instanceof Error ? error.message : '会话审查设置读取失败，已使用默认设置。'
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.loadError = error instanceof Error ? error.message : '会话审查设置读取失败，已使用默认设置。'
     }
-    for (const name of await readdir(this.directory)) {
-      if (!/^[0-9a-f-]{36}\.json$/u.test(name)) continue
-      try {
-        const record = JSON.parse(await readFile(path.join(this.directory, name), 'utf8')) as ReviewRecord
-        if (record.id + '.json' !== name || typeof record.sessionId !== 'string' || !Number.isFinite(record.startedAt)) throw new Error('审查记录格式损坏。')
-        if (record.outcome === undefined) record.outcome = 'interrupted'
-        this.rows.set(record.id, record)
-      } catch (error) {
-        // One damaged row is skipped; the store stays usable for every other call.
-        this.error = `已跳过损坏的审查记录 ${name}：${error instanceof Error ? error.message : '格式无法解析'}`
+    const names = (await readdir(this.directory)).filter(name => /^[0-9a-f-]{36}\.json$/u.test(name))
+    for (let start = 0; start < names.length; start += 16) {
+      const batch = await Promise.all(names.slice(start, start + 16).map(async name => {
+        try {
+          const record = JSON.parse(await readFile(path.join(this.directory, name), 'utf8')) as ReviewRecord
+          if (record.id + '.json' !== name || typeof record.sessionId !== 'string' || !Number.isFinite(record.startedAt)) throw new Error('审查记录格式损坏。')
+          if (record.outcome === undefined) record.outcome = 'interrupted'
+          return { name, record } as const
+        } catch (error) {
+          return { name, error } as const
+        }
+      }))
+      // Apply results in readdir order so warning selection remains deterministic.
+      for (const result of batch) {
+        if ('error' in result) {
+          // One damaged row is skipped; the store stays usable for every other call.
+          this.loadError = `已跳过损坏的审查记录 ${result.name}：${result.error instanceof Error ? result.error.message : '格式无法解析'}`
+        } else {
+          this.rows.set(result.record.id, result.record)
+        }
       }
     }
   }
   async begin(row: Omit<ReviewRecord, 'id'>): Promise<string> {
     await this.ready
     const id = randomUUID()
-    await this.write({ ...row, id })
+    await this.enqueue(() => this.saveRecord({ ...row, id }))
     return id
   }
   async update(id: string, patch: Partial<ReviewRecord>): Promise<void> {
     await this.ready
-    const next = this.chain.then(async () => {
+    await this.enqueue(async () => {
       const previous = this.rows.get(id)
       if (previous === undefined) throw new Error('审查记录不存在。')
-      await this.persist({ ...previous, ...patch, id })
+      await this.saveRecord({ ...previous, ...patch, id })
     })
-    // Keep the queue usable, but reject this caller so a missing audit blocks dispatch.
-    this.chain = next.catch(error => { this.error = error instanceof Error ? error.message : '审查记录写入失败。' })
-    await next
   }
-  private async write(row: ReviewRecord): Promise<void> {
-    const next = this.chain.then(() => this.persist(row))
-    this.chain = next.catch(error => { this.error = error instanceof Error ? error.message : '审查记录写入失败。' })
-    await next
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.chain.then(operation)
+    // A failed operation rejects its caller while leaving later writes runnable.
+    this.chain = next.catch(() => undefined)
+    return next
   }
   private async persist(row: ReviewRecord): Promise<void> {
     const temporary = path.join(this.directory, `${row.id}-${randomUUID()}.tmp`)
     await writeFile(temporary, JSON.stringify(row), { flag: 'wx', mode: 0o600 })
     await rename(temporary, path.join(this.directory, row.id + '.json'))
     this.rows.set(row.id, row)
-    this.error = undefined
   }
-  async page(sessionId: string, offset = 0): Promise<{ rows: ReviewRecord[]; total: number; error: string | null }> {
+  private async saveRecord(row: ReviewRecord): Promise<void> {
+    try {
+      await this.persist(row)
+    } catch (error) {
+      throw this.noteWriteFailure(error)
+    }
+    this.writeError = undefined
+  }
+  private async savePreferences(preferences: typeof this.preferences): Promise<void> {
+    const temporary = path.join(this.directory, `preferences-${randomUUID()}.tmp`)
+    try {
+      await writeFile(temporary, JSON.stringify(preferences), { flag: 'wx', mode: 0o600 })
+      await rename(temporary, path.join(this.directory, '.preferences.json'))
+    } catch (error) {
+      throw this.noteWriteFailure(error)
+    }
+    this.preferences = preferences
+    this.writeError = undefined
+  }
+  private noteWriteFailure(error: unknown): RecordWriteError {
+    const failure = error instanceof RecordWriteError
+      ? error
+      : new RecordWriteError(error instanceof Error ? error.message : '审查记录写入失败。')
+    this.writeError = failure.message
+    return failure
+  }
+  async page(sessionId: string, offset = 0): Promise<RecordPage> {
     await this.ready
-    const rows = [...this.rows.values()].filter(row => row.sessionId === sessionId).sort((a, b) => b.startedAt - a.startedAt)
-    return { rows: rows.slice(offset, offset + 30), total: rows.length, error: this.error ?? null }
+    const rows: ReviewRecord[] = []
+    let rules = 0
+    let allowed = 0
+    let denied = 0
+    let failures = 0
+    for (const row of this.rows.values()) {
+      if (row.sessionId !== sessionId) continue
+      rows.push(row)
+      if (row.source === 'rule' && row.status === 'allowed') rules++
+      if (row.source !== 'rule' && row.status === 'allowed') allowed++
+      if (row.status === 'denied' || row.status === 'awaiting_user') denied++
+      if (row.status === 'error') failures++
+    }
+    rows.sort((a, b) => b.startedAt - a.startedAt)
+    return { rows: rows.slice(offset, offset + 30), total: rows.length, error: this.error ?? null, rules, allowed, denied, failures }
   }
   async drain(): Promise<void> { await this.ready.catch(() => undefined); await this.chain }
   async setPreference(sessionId: string, preference: typeof this.preferences[string]): Promise<void> {
     await this.ready
-    const next = this.chain.then(async () => {
+    await this.enqueue(async () => {
       const preferences = { ...this.preferences, [sessionId]: preference }
-      const temporary = path.join(this.directory, `preferences-${randomUUID()}.tmp`)
-      await writeFile(temporary, JSON.stringify(preferences), { flag: 'wx', mode: 0o600 })
-      await rename(temporary, path.join(this.directory, '.preferences.json'))
-      this.preferences = preferences
+      await this.savePreferences(preferences)
     })
-    this.chain = next.catch(() => {})
-    await next
   }
 }

@@ -40,8 +40,8 @@ export function ReviewTab(props: TabFace) {
       if (pending || disposed) return
       pending = true
       const generation = statusGeneration.current
-      try { const current = await props.status(offset); if (!disposed && generation === statusGeneration.current) { setStatus(current); setStatusError('') } }
-      catch (failure) { if (!disposed) setStatusError(failure instanceof Error ? failure.message : '审查记录读取失败。') }
+      try { const current = await props.status(offset); if (!disposed && isCurrent() && generation === statusGeneration.current) { setStatus(current); setStatusError('') } }
+      catch (failure) { if (!disposed && isCurrent() && generation === statusGeneration.current) setStatusError(failure instanceof Error ? failure.message : '审查记录读取失败。') }
       finally { pending = false }
     }
     void refresh()
@@ -72,6 +72,16 @@ export function ReviewTab(props: TabFace) {
     try { await action() } catch (failure) { if (isCurrent()) setError(failure instanceof Error ? failure.message : '操作失败。') }
     finally { if (pendingAction.current === props.status) pendingAction.current = undefined; if (isCurrent()) setBusy(false) }
   }
+  const selectSession = async (id: string) => {
+    statusGeneration.current++
+    try {
+      await props.select(id)
+      if (!isCurrent()) return
+      const generation = ++statusGeneration.current
+      const next = await props.status(offset)
+      if (isCurrent() && generation === statusGeneration.current) { setStatus(next); setStatusError(''); setNotice('本会话审查模型已更新。') }
+    } finally { if (isCurrent()) statusGeneration.current++ }
+  }
   const save = async () => {
     if (draft === undefined || view === undefined || settingsLoading) return
     if (draft.backend === 'model' && (!draft.provider || !draft.model)) throw new Error('请先选择独立审查模型。')
@@ -96,7 +106,7 @@ export function ReviewTab(props: TabFace) {
   const sessionChoices = status && !choices.some(choice => choice.id === status.selection) ? [...choices, { id: status.selection, label: '已保存的会话选择（列表暂未加载）', selection: null }] : choices
   return <div data-arplus>
     <h2>自动审查 Plus</h2><p className="arplus-muted">{status === undefined ? '正在读取当前会话状态…' : status.enabled ? '当前会话已启用 Auto 审查' : '请在输入框原有权限选择器中选择 Auto。'}</p>
-    <label>本会话审查模型<Select label="本会话审查模型" value={status?.selection ?? 'default'} options={sessionChoices} disabled={busy || !catalog || !status} onChange={id => void run(async () => { statusGeneration.current++; await props.select(id); if (!isCurrent()) return; const next = await props.status(offset); if (isCurrent()) { setStatus(next); setNotice('本会话审查模型已更新。') } })} /></label>
+    <label>本会话审查模型<Select label="本会话审查模型" value={status?.selection ?? 'default'} options={sessionChoices} disabled={busy || !catalog || !status} onChange={id => void run(() => selectSession(id))} /></label>
     {status && <small>{status.selection === 'default' ? '本会话跟随默认设置。' : '本会话覆盖默认设置；选择“跟随默认配置”可恢复。'}</small>}
     {catalog?.incomplete && <small>部分服务的模型列表读取失败，可重新加载。</small>}
     {status && <div className="arplus-counts"><span>规则放行 <strong>{status.rules}</strong></span><span>审查通过 <strong>{status.allowed}</strong></span><span>拒绝 / 待确认 <strong>{status.denied}</strong></span><span>审查失败 <strong>{status.failures}</strong></span></div>}
